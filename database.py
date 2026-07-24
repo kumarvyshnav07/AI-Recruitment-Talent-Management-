@@ -1,0 +1,406 @@
+import mysql.connector
+from mysql.connector import Error
+
+DB_CONFIG = {
+    "host": "127.0.0.1",
+    "user": "root",
+    "password": "Kumar*2007",
+    "database": "ai_recruitment_copilot",
+}
+
+
+def get_connection():
+    try:
+        return mysql.connector.connect(
+            host=DB_CONFIG["host"], user=DB_CONFIG["user"], password=DB_CONFIG["password"]
+        )
+    except Error as e:
+        print("Database Connection Error:", e)
+        return None
+
+
+def init_db():
+    connection = get_connection()
+    if connection is None:
+        return
+    cursor = connection.cursor()
+    cursor.execute(f"CREATE DATABASE IF NOT EXISTS {DB_CONFIG['database']}")
+    connection.database = DB_CONFIG["database"]
+
+    # Candidates table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS candidates(
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(200),
+        email VARCHAR(200),
+        job_role VARCHAR(200),
+        phone VARCHAR(50),
+        education TEXT,
+        experience VARCHAR(100),
+        skills LONGTEXT,
+        certifications LONGTEXT,
+        projects LONGTEXT,
+        resume_name VARCHAR(255),
+        ats_score INT,
+        recommendation VARCHAR(100),
+        confidence VARCHAR(20),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY unique_candidate_job (email, job_role)
+    )
+    """)
+
+    # Users table (needed by auth.py's register/login — this was missing,
+    # which is why login had nothing real to check against)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS users(
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        username VARCHAR(100) UNIQUE,
+        email VARCHAR(200) UNIQUE,
+        password VARCHAR(255)
+    )
+    """)
+
+    # Job postings table (job_id, job_title, company_name, experience,
+    # location, salary — per your spec — plus required_skills/qualification
+    # so a posted job can feed straight into calculate_ats()).
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS job(
+        job_id INT AUTO_INCREMENT PRIMARY KEY,
+        job_title VARCHAR(200) NOT NULL,
+        company_name VARCHAR(200) NOT NULL,
+        experience VARCHAR(100),
+        location VARCHAR(200),
+        salary DECIMAL(12,2),
+        required_skills TEXT,
+        qualification VARCHAR(100),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    connection.commit()
+    cursor.close()
+    connection.close()
+
+
+def save_candidate(candidate, ats, recommendation, resume_name, job_role):
+    connection = get_connection()
+    if connection is None:
+        return "error"
+    connection.database = DB_CONFIG["database"]
+    cursor = connection.cursor()
+
+    cursor.execute(
+        "SELECT id FROM candidates WHERE email=%s AND job_role=%s",
+        (candidate["email"], job_role),
+    )
+    existing = cursor.fetchone()
+
+    cert_str = (
+        ", ".join(candidate.get("certifications", []))
+        if isinstance(candidate.get("certifications"), list)
+        else candidate.get("certifications", "")
+    )
+    proj_str = (
+        ", ".join(candidate.get("projects", []))
+        if isinstance(candidate.get("projects"), list)
+        else candidate.get("projects", "")
+    )
+
+    if existing:
+        action = "updated"
+        cursor.execute(
+            """
+            UPDATE candidates SET
+                name=%s, phone=%s, education=%s, experience=%s, skills=%s,
+                certifications=%s, projects=%s, resume_name=%s, ats_score=%s,
+                recommendation=%s, confidence=%s
+            WHERE email=%s AND job_role=%s
+            """,
+            (
+                candidate["name"], candidate["phone"], candidate["education"],
+                candidate["experience"], candidate["skills"], cert_str, proj_str,
+                resume_name, ats["ats"], recommendation["decision"],
+                recommendation["confidence"], candidate["email"], job_role,
+            ),
+        )
+    else:
+        action = "inserted"
+        cursor.execute(
+            """
+            INSERT INTO candidates (name, email, job_role, phone, education, experience,
+                skills, certifications, projects, resume_name, ats_score, recommendation, confidence)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                candidate["name"], candidate["email"], job_role, candidate["phone"],
+                candidate["education"], candidate["experience"], candidate["skills"],
+                cert_str, proj_str, resume_name, ats["ats"], recommendation["decision"],
+                recommendation["confidence"],
+            ),
+        )
+
+    connection.commit()
+    cursor.close()
+    connection.close()
+    return action
+
+
+def get_candidates():
+    connection = get_connection()
+    if connection is None:
+        return []
+    connection.database = DB_CONFIG["database"]
+    cursor = connection.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM candidates ORDER BY updated_at DESC")
+    rows = cursor.fetchall()
+    cursor.close()
+    connection.close()
+    return rows
+
+
+def get_candidate(candidate_id):
+    """Fetch a single candidate by primary key id."""
+    connection = get_connection()
+    if connection is None:
+        return None
+    connection.database = DB_CONFIG["database"]
+    cursor = connection.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM candidates WHERE id=%s", (candidate_id,))
+    row = cursor.fetchone()
+    cursor.close()
+    connection.close()
+    return row
+
+
+def get_candidate_by_id(email, job_role):
+    """Fetch a single candidate by its (email, job_role) unique key."""
+    connection = get_connection()
+    if connection is None:
+        return None
+    connection.database = DB_CONFIG["database"]
+    cursor = connection.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT * FROM candidates WHERE email=%s AND job_role=%s", (email, job_role)
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    connection.close()
+    return row
+
+
+def get_candidates_for_role(job_role):
+    """Fetch every candidate who was evaluated against a specific job
+    role, best ATS score first. Used to show 'Candidates for this Role'
+    on the Job Postings page."""
+    connection = get_connection()
+    if connection is None:
+        return []
+    connection.database = DB_CONFIG["database"]
+    cursor = connection.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT * FROM candidates WHERE job_role=%s ORDER BY ats_score DESC",
+        (job_role,),
+    )
+    rows = cursor.fetchall()
+    cursor.close()
+    connection.close()
+    return rows
+
+
+def search_candidates(query):
+    """Search candidates by name, email, skills, or job_role (partial match)."""
+    connection = get_connection()
+    if connection is None:
+        return []
+    connection.database = DB_CONFIG["database"]
+    cursor = connection.cursor(dictionary=True)
+    like = f"%{query}%"
+    cursor.execute(
+        """
+        SELECT * FROM candidates
+        WHERE name LIKE %s OR email LIKE %s OR skills LIKE %s OR job_role LIKE %s
+           OR education LIKE %s
+        ORDER BY updated_at DESC
+        """,
+        (like, like, like, like, like),
+    )
+    rows = cursor.fetchall()
+    cursor.close()
+    connection.close()
+    return rows
+
+
+def delete_candidate(email, job_role):
+    """Delete a candidate application identified by (email, job_role)."""
+    connection = get_connection()
+    if connection is None:
+        return False
+    connection.database = DB_CONFIG["database"]
+    cursor = connection.cursor()
+    cursor.execute(
+        "DELETE FROM candidates WHERE email=%s AND job_role=%s", (email, job_role)
+    )
+    connection.commit()
+    deleted = cursor.rowcount > 0
+    cursor.close()
+    connection.close()
+    return deleted
+
+
+def create_job(job_title, company_name, experience, location, salary,
+               required_skills="", qualification="Any Degree"):
+    """
+    Insert a new job posting. Uses a parameterized query (%s placeholders)
+    — never string-format values directly into SQL, that's how SQL
+    injection happens (see the note in job_api.py).
+    Returns the new job_id, or None on failure.
+    """
+    connection = get_connection()
+    if connection is None:
+        return None
+    connection.database = DB_CONFIG["database"]
+    cursor = connection.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO job (job_title, company_name, experience, location, salary,
+            required_skills, qualification)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """,
+        (job_title, company_name, experience, location, salary,
+         required_skills, qualification),
+    )
+
+    connection.commit()
+    new_id = cursor.lastrowid
+    cursor.close()
+    connection.close()
+    return new_id
+
+
+def update_job(job_id, job_title, company_name, experience, location, salary,
+               required_skills="", qualification="Any Degree"):
+    """
+    Update an existing job posting in place (parameterized query, same
+    injection-safety note as create_job). Returns True if a row was
+    actually updated, False if job_id didn't exist or the DB was
+    unreachable.
+    """
+    connection = get_connection()
+    if connection is None:
+        return False
+    connection.database = DB_CONFIG["database"]
+    cursor = connection.cursor()
+
+    cursor.execute(
+        """
+        UPDATE job SET
+            job_title=%s, company_name=%s, experience=%s, location=%s,
+            salary=%s, required_skills=%s, qualification=%s
+        WHERE job_id=%s
+        """,
+        (job_title, company_name, experience, location, salary,
+         required_skills, qualification, job_id),
+    )
+
+    connection.commit()
+    updated = cursor.rowcount > 0
+    cursor.close()
+    connection.close()
+    return updated
+
+
+def get_jobs():
+    """Return all job postings, most recent first."""
+    connection = get_connection()
+    if connection is None:
+        return []
+    connection.database = DB_CONFIG["database"]
+    cursor = connection.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM job ORDER BY created_at DESC")
+    rows = cursor.fetchall()
+    cursor.close()
+    connection.close()
+    return rows
+
+
+def get_job(job_id):
+    """Fetch a single job posting by job_id."""
+    connection = get_connection()
+    if connection is None:
+        return None
+    connection.database = DB_CONFIG["database"]
+    cursor = connection.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM job WHERE job_id=%s", (job_id,))
+    row = cursor.fetchone()
+    cursor.close()
+    connection.close()
+    return row
+
+
+def delete_job(job_id):
+    """Delete a job posting by job_id."""
+    connection = get_connection()
+    if connection is None:
+        return False
+    connection.database = DB_CONFIG["database"]
+    cursor = connection.cursor()
+    cursor.execute("DELETE FROM job WHERE job_id=%s", (job_id,))
+    connection.commit()
+    deleted = cursor.rowcount > 0
+    cursor.close()
+    connection.close()
+    return deleted
+
+
+def get_dashboard_stats():
+    connection = get_connection()
+    if connection is None:
+        return {"total_candidates": 0, "shortlisted": 0, "average_ats": 0, "today_uploads": 0}
+    connection.database = DB_CONFIG["database"]
+    cursor = connection.cursor(dictionary=True)
+
+    cursor.execute("SELECT COUNT(*) total FROM candidates")
+    total = cursor.fetchone()["total"]
+    cursor.execute("SELECT COUNT(*) total FROM candidates WHERE ats_score>=80")
+    shortlisted = cursor.fetchone()["total"]
+    cursor.execute("SELECT AVG(ats_score) avg_score FROM candidates")
+    avg = cursor.fetchone()["avg_score"]
+    avg = round(avg, 1) if avg else 0
+    cursor.execute("SELECT COUNT(*) total FROM candidates WHERE DATE(updated_at)=CURDATE()")
+    today = cursor.fetchone()["total"]
+
+    cursor.close()
+    connection.close()
+    return {
+        "total_candidates": total,
+        "shortlisted": shortlisted,
+        "average_ats": avg,
+        "today_uploads": today,
+    }
+
+
+def top_skills():
+    from collections import Counter
+
+    counter = Counter()
+    for row in get_candidates():
+        skills = row["skills"]
+        if not skills:
+            continue
+        for skill in skills.split(","):
+            counter.update([skill.strip()])
+    return counter.most_common(10)
+
+
+def database_version():
+    connection = get_connection()
+    if connection is None:
+        return "Unknown"
+    cursor = connection.cursor()
+    cursor.execute("SELECT VERSION()")
+    version = cursor.fetchone()[0]
+    cursor.close()
+    connection.close()
+    return version
