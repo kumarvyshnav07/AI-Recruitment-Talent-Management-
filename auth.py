@@ -1,11 +1,12 @@
 import bcrypt
+import streamlit as st
 from database import get_connection, DB_CONFIG
 
 
 # -----------------------------
 # Register User
 # -----------------------------
-def register(username, email, password):
+def register(username, email, password, role="candidate"):
     connection = get_connection()
     if connection is None:
         return False, "Database connection failed"
@@ -26,8 +27,8 @@ def register(username, email, password):
     hashed_password = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
 
     cursor.execute(
-        "INSERT INTO users(username, email, password) VALUES (%s, %s, %s)",
-        (username, email, hashed_password.decode()),
+        "INSERT INTO users(username, email, password, role) VALUES (%s, %s, %s, %s)",
+        (username, email, hashed_password.decode(), role),
     )
 
     connection.commit()
@@ -43,22 +44,20 @@ def register(username, email, password):
 def login(username, password):
     connection = get_connection()
     if connection is None:
-        return False
+        return None
 
     connection.database = DB_CONFIG["database"]
-    cursor = connection.cursor()
+    cursor = connection.cursor(dictionary=True)
 
-    cursor.execute("SELECT password FROM users WHERE username=%s", (username,))
+    cursor.execute("SELECT * FROM users WHERE username=%s", (username,))
     row = cursor.fetchone()
 
     cursor.close()
     connection.close()
 
-    # NOTE: no account found -> login fails. (A previous version of this
-    # file had a hardcoded bypass that let anyone log in as "Recruiter"
-    # with any password — that's a serious auth vulnerability and has
-    # been removed. Every user must register a real account.)
     if row is None:
-        return False
+        return None
 
-    return bcrypt.checkpw(password.encode(), row[0].encode())
+    if bcrypt.checkpw(password.encode(), row["password"].encode()):
+        return row
+    return None
