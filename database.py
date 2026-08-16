@@ -1,12 +1,25 @@
+import os
 import mysql.connector
 from mysql.connector import Error
+from dotenv import load_dotenv
+
+# Load DB_* values from .env instead of hardcoding secrets in source
+# (a hardcoded password in the repo is a real security liability the
+# moment this code is committed anywhere, even a private repo).
+load_dotenv()
 
 DB_CONFIG = {
-    "host": "127.0.0.1",
-    "user": "root",
-    "password": "Kumar*2007",
-    "database": "ai_recruitment_copilot",
+    "host": os.getenv("DB_HOST", "127.0.0.1"),
+    "user": os.getenv("DB_USER", "root"),
+    "password": os.getenv("DB_PASSWORD", ""),
+    "database": os.getenv("DB_NAME", "ai_recruitment_copilot"),
 }
+
+if not DB_CONFIG["password"]:
+    print(
+        "Warning: DB_PASSWORD not set in .env — connecting with an empty "
+        "password. Add DB_HOST/DB_USER/DB_PASSWORD/DB_NAME to a .env file."
+    )
 
 
 def get_connection():
@@ -60,6 +73,14 @@ def init_db():
         password VARCHAR(255)
     )
     """)
+
+    # Role column — powers the separate Recruiter / Candidate login portals.
+    # Added defensively (existing accounts predate this column and default
+    # to 'recruiter' so nobody already registered gets locked out).
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN role VARCHAR(20) DEFAULT 'recruiter'")
+    except Exception:
+        pass  # Column already exists
 
     # Job postings table (job_id, job_title, company_name, experience,
     # location, salary — per your spec — plus required_skills/qualification
@@ -201,6 +222,25 @@ def get_candidates_for_role(job_role):
     cursor.execute(
         "SELECT * FROM candidates WHERE job_role=%s ORDER BY ats_score DESC",
         (job_role,),
+    )
+    rows = cursor.fetchall()
+    cursor.close()
+    connection.close()
+    return rows
+
+
+def get_candidates_by_email(email):
+    """All job applications tied to one login email — a candidate can have
+    more than one row (one per job_role they were evaluated against).
+    Powers the Candidate portal dashboard."""
+    connection = get_connection()
+    if connection is None:
+        return []
+    connection.database = DB_CONFIG["database"]
+    cursor = connection.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT * FROM candidates WHERE email=%s ORDER BY updated_at DESC",
+        (email,),
     )
     rows = cursor.fetchall()
     cursor.close()
@@ -352,6 +392,86 @@ def delete_job(job_id):
     cursor.close()
     connection.close()
     return deleted
+
+
+def get_job_by_title(job_title):
+    """Best-effort lookup of a job posting by its title, used to enrich a
+    candidate's own application (company name, location, required skills,
+    etc.) since `candidates` stores job_role as free text rather than a
+    job_id foreign key. Returns the most recently posted match, or None
+    if the posting no longer exists (e.g. it was deleted, or the ATS
+    analysis was run as a manual entry rather than against a real
+    posting) — callers must handle None gracefully rather than assume a
+    job record always exists."""
+    connection = get_connection()
+    if connection is None:
+        return None
+    connection.database = DB_CONFIG["database"]
+    cursor = connection.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT * FROM job WHERE job_title=%s ORDER BY created_at DESC LIMIT 1",
+        (job_title,),
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    connection.close()
+    return row
+
+
+# =====================================================
+# CANDIDATE PORTAL — DASHBOARD STATISTICS
+# =====================================================
+# These helpers turn a candidate's raw application rows into the
+# aggregate numbers the candidate dashboard needs, so candidate_page.py
+# never has to compute stage/ATS math inline. Every function takes only
+# `email` (the candidate's login identity) and returns safe defaults
+# (0 / [] / None) when the candidate has no applications yet or the DB
+# is unreachable.
+
+CANDIDATE_ACTIVE_STAGES = ("Applied", "Screening", "Interview in progress")
+CANDIDATE_FINAL_STAGES = ("Selected", "Rejected")
+
+
+def get_candidate_status_counts(email):
+    """Count of the candidate's own applications in each pipeline stage.
+    Keys always present (0 if none), in pipeline order, so the caller
+    can iterate a fixed, predictable status list for the status-overview
+    chart and hiring funnel."""
+    apps = get_candidates_by_email(email)
+    counts = {
+        "Applied": 0, "Screening": 0, "Interview in progress": 0,
+        "Selected": 0, "Rejected": 0,
+    }
+    for a in apps:
+        stage = a.get("stage") or "Applied"
+        if stage in counts:
+            counts[stage] += 1
+        else:
+            # Unknown/legacy stage value — still count it somewhere
+            # rather than silently drop it from totals.
+            counts.setdefault(stage, 0)
+            counts[stage] += 1
+    return counts
+
+
+def get_candidate_ats_stats(email):
+    """ATS score summary across every application this candidate has
+    submitted. `scores` is ordered the same as get_candidates_by_email
+    (most recently updated first) so a caller can chart it directly."""
+    apps = get_candidates_by_email(email)
+    scores = [
+        {"job_role": a.get("job_role", "—"), "score": a.get("ats_score") or 0}
+        for a in apps
+    ]
+    values = [s["score"] for s in scores]
+    if not values:
+        return {"average": 0, "highest": 0, "lowest": 0, "scores": []}
+    return {
+        "average": round(sum(values) / len(values), 1),
+        "highest": max(values),
+        "lowest": min(values),
+        "scores": scores,
+    }
 
 
 def get_dashboard_stats():
