@@ -14,7 +14,9 @@ from database import init_db
 
 from candidate_page import render_candidate_dashboard
 from recruiter_page import render_recruiter_dashboard
+from admin_page import render_admin_dashboard
 from interview_db import init_interview_db
+from admin_db import init_admin_db
 from ui import (
     load_css,
     sidebar_logo,
@@ -47,6 +49,9 @@ init_interview_db()  # runs the interview_sessions/interview_answers schema
                       # it used to only run when a recruiter opened the
                       # Interview Workspace page, which left candidate-only
                       # sessions hitting a missing-column error.
+init_admin_db()       # audit_logs / platform_settings tables for the Admin
+                      # Control Center — same "run at startup regardless of
+                      # which page loads first" reasoning as above.
 
 # ===============================
 # SESSION VARIABLES
@@ -168,7 +173,7 @@ if not st.session_state.logged_in:
                     unsafe_allow_html=True,
                 )
 
-                pcol1, pcol2 = st.columns(2)
+                pcol1, pcol2, pcol3 = st.columns(3)
                 with pcol1:
                     with st.container(border=True):
                         st.markdown(
@@ -199,14 +204,29 @@ if not st.session_state.logged_in:
                         if st.button("Enter Candidate Portal →", use_container_width=True, key="portal_candidate", type="primary"):
                             st.session_state.portal_mode = "candidate"
                             st.rerun()
+                with pcol3:
+                    with st.container(border=True):
+                        st.markdown(
+                            f"""
+                            <div style="text-align:center; padding:6px 0 12px 0;">
+                                <div style="font-size:28px;">🛡️</div>
+                                <div style="font-weight:800; font-size:15px; margin-top:8px; color:{INK}; font-family:'Space Grotesk';">Admin</div>
+                                <div style="font-size:11.5px; color:{MIST}; margin-top:4px;">Platform oversight & system management</div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                        if st.button("Enter Admin Portal →", use_container_width=True, key="portal_admin", type="primary"):
+                            st.session_state.portal_mode = "admin"
+                            st.rerun()
             st.stop()
 
         # ==========================
         # STEP 2 — SIGN IN / REGISTER
         # ==========================
         portal = st.session_state.portal_mode
-        portal_label = "Recruiter" if portal == "recruiter" else "Candidate"
-        portal_icon = "🧑‍💼" if portal == "recruiter" else "🎓"
+        portal_label = {"recruiter": "Recruiter", "candidate": "Candidate", "admin": "Admin"}[portal]
+        portal_icon = {"recruiter": "🧑‍💼", "candidate": "🎓", "admin": "🛡️"}[portal]
 
         st.markdown(
             f'<div class="step-pill">{portal_icon} {portal_label} Portal</div>'
@@ -225,6 +245,13 @@ if not st.session_state.logged_in:
                 ("📤", "Screen resumes with ATS scoring", "Upload resumes and get a weighted match score against each job"),
                 ("🧠", "Run AI-driven interviews", "Adaptive interview questions scored automatically per candidate"),
                 ("📊", "Track pipeline & analytics", "Hiring funnel, skill demand, and shortlist recommendations at a glance"),
+            ]
+        elif portal == "admin":
+            about_items = [
+                ("👥", "Manage every account", "Activate, deactivate, or change the role of any user on the platform"),
+                ("🗂", "Oversee all jobs & applications", "Full visibility across every recruiter's postings and pipelines"),
+                ("📊", "Platform-wide analytics", "ATS trends, interview performance, and growth — never mock data"),
+                ("🩺", "Monitor system health", "Database, AI service, and integration status at a glance"),
             ]
         else:
             about_items = [
@@ -251,12 +278,11 @@ if not st.session_state.logged_in:
             st.markdown(about_rows, unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
-        tab1, tab2 = st.tabs(["Sign In", "Create Account"])
 
         # ==========================
-        # LOGIN
+        # LOGIN — every portal gets this
         # ==========================
-        with tab1:
+        def _render_login_form():
             with st.container(border=True):
                 username = st.text_input("Username", placeholder="Enter username", key="login_username")
                 password = st.text_input("Password", type="password", placeholder="Enter password", key="login_password")
@@ -268,7 +294,9 @@ if not st.session_state.logged_in:
                     row = login(username, password)
                     if row:
                         account_role = (row.get("role") or "recruiter").lower()
-                        if account_role != portal:
+                        if (row.get("status") or "active").lower() != "active":
+                            st.error("This account has been deactivated. Contact an administrator.")
+                        elif account_role != portal:
                             st.error(
                                 f"This account is registered as a {account_role.title()}. "
                                 f"Please use the {account_role.title()} portal instead."
@@ -283,27 +311,41 @@ if not st.session_state.logged_in:
                     else:
                         st.error("Invalid username or password.")
 
-        # ==========================
-        # REGISTER
-        # ==========================
-        with tab2:
-            with st.container(border=True):
-                new_user = st.text_input("Username", key="new_user")
-                email = st.text_input("Email Address", key="email")
-                password = st.text_input("Password", type="password", key="pass")
-                confirm = st.text_input("Confirm Password", type="password")
+        # Admin accounts are never self-registered from this public form —
+        # only Sign In is offered. New admins are created either by an
+        # existing admin (User Management → Change Role) or via the
+        # create_admin.py command-line utility for the very first account.
+        if portal == "admin":
+            st.caption("Admin accounts aren't self-registered here — ask an existing admin to grant access, "
+                       "or use the create_admin.py setup script for the first account.")
+            _render_login_form()
+        else:
+            tab1, tab2 = st.tabs(["Sign In", "Create Account"])
 
-                st.markdown("<br>", unsafe_allow_html=True)
+            with tab1:
+                _render_login_form()
 
-                if st.button(f"✦  Register {portal_label} Account", use_container_width=True, type="primary"):
-                    if password != confirm:
-                        st.error("Passwords do not match.")
-                    else:
-                        ok, msg = register(new_user, email, password, role=portal)
-                        if ok:
-                            st.success(msg + " — you can sign in now.")
+            # ==========================
+            # REGISTER
+            # ==========================
+            with tab2:
+                with st.container(border=True):
+                    new_user = st.text_input("Username", key="new_user")
+                    email = st.text_input("Email Address", key="email")
+                    password = st.text_input("Password", type="password", key="pass")
+                    confirm = st.text_input("Confirm Password", type="password")
+
+                    st.markdown("<br>", unsafe_allow_html=True)
+
+                    if st.button(f"✦  Register {portal_label} Account", use_container_width=True, type="primary"):
+                        if password != confirm:
+                            st.error("Passwords do not match.")
                         else:
-                            st.error(msg)
+                            ok, msg = register(new_user, email, password, role=portal)
+                            if ok:
+                                st.success(msg + " — you can sign in now.")
+                            else:
+                                st.error(msg)
 
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("← Back to Portal Selection", use_container_width=True, type="secondary"):
@@ -317,6 +359,7 @@ if not st.session_state.logged_in:
 # ===============================
 
 is_recruiter = st.session_state.role == "recruiter"
+is_admin = st.session_state.role == "admin"
 
 with st.sidebar:
     if is_recruiter:
@@ -363,13 +406,26 @@ with st.sidebar:
         st.markdown("<br>", unsafe_allow_html=True)
         theme_toggle()
     else:
-        # Candidates get exactly one sidebar -- the dedicated one built
-        # inside render_candidate_dashboard()/_render_sidebar() below
-        # (avatar+name, section nav, Night Mode, Logout). Rendering the
-        # generic logo/session-card/nav-placeholder/Sign-Out block here
-        # too used to stack a second, near-duplicate sidebar underneath
-        # it -- that's the "excess" spacing/duplication bug.
+        # Candidates and Admins each get exactly one sidebar -- the
+        # dedicated one built inside render_candidate_dashboard() /
+        # render_admin_dashboard() below (avatar+name, section nav,
+        # Logout). Rendering the generic logo/session-card/nav-placeholder
+        # /Sign-Out block here too used to stack a second, near-duplicate
+        # sidebar underneath it -- that's the "excess" spacing/duplication
+        # bug.
         page = None
+
+# ===============================
+# ADMIN PORTAL
+# ===============================
+
+if is_admin:
+    render_admin_dashboard({
+        "username": st.session_state.username,
+        "email": st.session_state.user_email,
+    })
+    footer()
+    st.stop()
 
 # ===============================
 # CANDIDATE PORTAL
