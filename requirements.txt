@@ -12,3 +12,4 @@ requests
 mysql-connector-python
 groq
 python-dotenv
+bcrypt
