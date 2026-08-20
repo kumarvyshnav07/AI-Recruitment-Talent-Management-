@@ -12,4 +12,7 @@ requests
 mysql-connector-python
 groq
 python-dotenv
-bcrypt
+plotly
+fastapi
+uvicorn
+streamlit-option-menu
