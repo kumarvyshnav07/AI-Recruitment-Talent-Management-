@@ -436,6 +436,7 @@ def render_recruiter_dashboard(page: str):
                         salary=new_salary,
                         required_skills=new_skills.strip(),
                         qualification=new_qualification,
+                        created_by=st.session_state.get("username"),
                     )
                     if new_id:
                         st.success(f"Job posted successfully (ID #{new_id}).")
@@ -1489,7 +1490,6 @@ def render_recruiter_dashboard(page: str):
 
         with col1:
             st.subheader("High-Demand Competency Frequency")
-            from database import top_skills
             skills = top_skills()
 
             if skills:
