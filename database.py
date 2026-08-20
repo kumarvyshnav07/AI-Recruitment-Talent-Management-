@@ -85,6 +85,12 @@ def init_db():
     # Job postings table (job_id, job_title, company_name, experience,
     # location, salary — per your spec — plus required_skills/qualification
     # so a posted job can feed straight into calculate_ats()).
+    #
+    # created_by stores the RECRUITER'S USERNAME (not a numeric user id) —
+    # admin_db.get_recruiter_rows() matches job.created_by against
+    # users.username directly, and recruiter_page.py's "Post a New Job"
+    # form passes created_by=st.session_state["username"]. Keep this a
+    # VARCHAR, matching what's actually written to it.
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS job(
         job_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -95,6 +101,7 @@ def init_db():
         salary DECIMAL(12,2),
         required_skills TEXT,
         qualification VARCHAR(100),
+        created_by VARCHAR(150),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """)
@@ -289,11 +296,21 @@ def delete_candidate(email, job_role):
 
 
 def create_job(job_title, company_name, experience, location, salary,
-               required_skills="", qualification="Any Degree"):
+               required_skills="", qualification="Any Degree", created_by=None):
     """
     Insert a new job posting. Uses a parameterized query (%s placeholders)
     — never string-format values directly into SQL, that's how SQL
     injection happens (see the note in job_api.py).
+
+    created_by: the posting recruiter's username (str), or None if not
+    known. This was previously missing entirely from both the function
+    signature and the INSERT statement — recruiter_page.py was already
+    calling create_job(..., created_by=username), which would raise
+    TypeError: create_job() got an unexpected keyword argument
+    'created_by'. Storing it here is what lets admin_db.get_recruiter_rows()
+    correctly count "Jobs Posted" per recruiter instead of always
+    showing 0.
+
     Returns the new job_id, or None on failure.
     """
     connection = get_connection()
@@ -305,11 +322,11 @@ def create_job(job_title, company_name, experience, location, salary,
     cursor.execute(
         """
         INSERT INTO job (job_title, company_name, experience, location, salary,
-            required_skills, qualification)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+            required_skills, qualification, created_by)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (job_title, company_name, experience, location, salary,
-         required_skills, qualification),
+         required_skills, qualification, created_by),
     )
 
     connection.commit()
