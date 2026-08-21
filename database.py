@@ -9,10 +9,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DB_CONFIG = {
-    "host": os.getenv("DB_HOST", "127.0.0.1"),
-    "user": os.getenv("DB_USER", "root"),
-    "password": os.getenv("DB_PASSWORD", ""),
-    "database": os.getenv("DB_NAME", "ai_recruitment_copilot"),
+    "host": os.getenv("DB_HOST"),
+    "port": int(os.getenv("DB_PORT", "3306")),
+    "user": os.getenv("DB_USER"),
+    "password": os.getenv("DB_PASSWORD"),
+    "database": os.getenv("DB_NAME"),
 }
 
 if not DB_CONFIG["password"]:
@@ -23,10 +24,31 @@ if not DB_CONFIG["password"]:
 
 
 def get_connection():
+    """Connect to the MySQL server WITHOUT selecting a database yet.
+    Used by init_db(), which needs a bare server connection so it can
+    run `CREATE DATABASE IF NOT EXISTS` before the target database
+    necessarily exists."""
     try:
         return mysql.connector.connect(
-            host=DB_CONFIG["host"], user=DB_CONFIG["user"], password=DB_CONFIG["password"]
+            host=DB_CONFIG["host"],
+            port=DB_CONFIG["port"],
+            user=DB_CONFIG["user"],
+            password=DB_CONFIG["password"],
         )
+    except Error as e:
+        print("Database Connection Error:", e)
+        return None
+
+
+def get_db_connection():
+    """Connect to the MySQL server WITH the target database already
+    selected. This is what every module other than init_db() should
+    use — admin_db.py and interview_db.py import this instead of each
+    keeping their own duplicate `mysql.connector.connect(**DB_CONFIG)`,
+    so there is exactly one place that owns connection logic."""
+    try:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        return conn
     except Error as e:
         print("Database Connection Error:", e)
         return None
