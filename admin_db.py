@@ -23,20 +23,16 @@ are added in database.py's init_db(), since they extend tables that
 module owns.
 """
 import os
-import mysql.connector
-from mysql.connector import Error
 from datetime import datetime, timedelta
 
-from database import DB_CONFIG, get_candidates, get_jobs
+from database import get_db_connection, get_candidates, get_jobs
 from interview_db import get_sessions
 
-
-def get_connection():
-    try:
-        return mysql.connector.connect(**DB_CONFIG)
-    except Error as e:
-        print("Admin DB Connection Error:", e)
-        return None
+# Reuse database.py's single connection function (aliased so the rest
+# of this file — which already calls get_connection() everywhere —
+# doesn't need to change). No more duplicate mysql.connector.connect(
+# **DB_CONFIG) block living separately in this module.
+get_connection = get_db_connection
 
 
 def _ensure_column(cursor, table, column, ddl):
