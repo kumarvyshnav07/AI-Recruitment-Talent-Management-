@@ -14,18 +14,14 @@ Every function here returns a safe default (None / [] / False) on a
 connection failure instead of raising, matching database.py's style -
 a dropped DB connection should degrade the UI, not crash the app.
 """
-import mysql.connector
-from mysql.connector import Error
 from datetime import datetime
-from database import DB_CONFIG
+from database import get_db_connection
 
-
-def get_connection():
-    try:
-        return mysql.connector.connect(**DB_CONFIG)
-    except Error as e:
-        print("Interview DB Connection Error:", e)
-        return None
+# Reuse database.py's single connection function (aliased so the rest
+# of this file — which already calls get_connection() everywhere —
+# doesn't need to change). No more duplicate mysql.connector.connect(
+# **DB_CONFIG) block living separately in this module.
+get_connection = get_db_connection
 
 
 def init_interview_db():
